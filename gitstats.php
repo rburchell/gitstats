@@ -163,6 +163,114 @@ class Person extends Contributor
     {
         return $this->sEmail;
     }
+
+    private $aCommitQueue = array();
+    public function appendToCommitQueue($sSha)
+    {
+        $this->aCommitQueue[] = array($sSha, $this->organisation());
+    }
+
+    public function processCommitQueue()
+    {
+        // this rather ugly implementation is designed to minimize the fork
+        // overhead diffing costs us in the cheapest way possible.
+        //
+        // we store SHAs on Person instances until we're done parsing the log,
+        // then, we invoke processCommitQueue on each Person.
+        //
+        // inside here, we pop items off the queue multiple at a time,  popen(),
+        // and go our merry way until they all finish
+        //
+        // this is in no way intended to be a good or best implementation, but
+        // it works.
+
+        while (count($this->aCommitQueue)) {
+            echo "Processing commit queue for " . $this->email() . ", " .
+                count($this->aCommitQueue) . " commits left to process.\n";
+
+            $aFDs = array(); // FDs
+            $aDiffs = array();
+            $aaOrganisations = array();
+
+            // popen a bunch of diffs
+            $i = 0;
+            while (count($this->aCommitQueue)) {
+                // bump this SHA off the list to process
+                $aCommitQueueItem = array_shift($this->aCommitQueue);
+                $sSha = $aCommitQueueItem[0];
+
+                $rFD = popen("git diff " . $sSha . "^1.." . $sSha, "r");
+                stream_set_blocking($rFD, false);
+                $aFDs[$rFD] = $rFD;
+                $aOrganisations[$rFD] = $aCommitQueueItem[1];
+
+                if (++$i == 300)
+                    break;
+            }
+
+            echo "Set " . $i . " jobs running\n";
+
+            // read all FDs until they finish
+            while (true) {
+                $i = count($aFDs);
+                if ($i <= 0)
+                    break;
+
+                foreach ($aFDs as $rFD) {
+                    if (@feof($rFD)) {
+                        unset($aFDs[$rFD]);
+                        pclose($rFD);
+                        continue;
+                    }
+
+                    if (!isset($aDiffs[$rFD]))
+                        $aDiffs[$rFD] = "";
+
+                    $aDiffs[$rFD] .= @fread($rFD, 10000);
+                }
+
+                // give it a chance to breathe
+                usleep(50000);
+            }
+
+            // process all diffs it!
+            foreach ($aDiffs as $iKey => $sDiff)
+                $this->processDiff(explode("\n", $sDiff), $aOrganisations[$iKey]);
+        }
+    }
+
+    public function processDiff($aCommitData, $oOrganisation)
+    {
+        $iLinesAdded = 0;
+        $iLinesRemoved = 0;
+
+        foreach ($aCommitData as $sLine) {
+            // don't care! :)
+            if (trim($sLine) == "")
+                continue;
+
+            if (strlen($sLine) > 1 && $sLine[0] == '-' && $sLine[1] == '-') {
+                // probably a diff header. I don't want to overcomplicate this
+                // for now at least, so let's just hope someone doesn't remove
+                // unindented code.
+                continue;
+            }
+
+            if ($sLine[0] == '-')
+                $iLinesRemoved++;
+            else if ($sLine[0] == '+')
+                $iLinesAdded++;
+        }
+
+        // bookkeeping
+        $this->setLinesRemovedCount($this->linesRemovedCount() + $iLinesRemoved);
+        $oOrganisation->setLinesRemovedCount($oOrganisation->linesRemovedCount() + $iLinesRemoved);
+        $this->setLinesAddedCount($this->linesAddedCount() + $iLinesAdded);
+        $oOrganisation->setLinesAddedCount($oOrganisation->linesAddedCount() + $iLinesAdded);
+
+        // update csvs
+        ContributorRepo::writeData();
+    }
 }
 
 abstract class ContributorRepo
@@ -242,52 +350,14 @@ abstract class ContributorRepo
         // another and keep contributing.
         $oPerson->setOrganisation($oOrganisation);
 
-        // now parse the actual diff for stats purposes
-        self::parseDiffForPerson($sCommit, $oPerson);
-    }
-
-    private static function parseDiffForPerson($sCommit, $oPerson)
-    {
         // simple bookkeeping first
         $oPerson->setCommitCount($oPerson->commitCount() + 1);
         $oPerson->organisation()->setCommitCount($oPerson->organisation()->commitCount() + 1);
 
-        $aCommitData = array();
-        exec('git diff ' . $sCommit. '^1..' . $sCommit, $aCommitData);
-
-        $iLinesAdded = 0;
-        $iLinesRemoved = 0;
-
-        foreach ($aCommitData as $sLine) {
-            // don't care! :)
-            if (trim($sLine) == "")
-                continue;
-
-            if (strlen($sLine) > 1 && $sLine[0] == '-' && $sLine[1] == '-') {
-                // probably a diff header. I don't want to overcomplicate this
-                // for now at least, so let's just hope someone doesn't remove
-                // unindented code.
-                continue;
-            }
-
-            if ($sLine[0] == '-')
-                $iLinesRemoved++;
-            else if ($sLine[0] == '+')
-                $iLinesAdded++;
-        }
-
-        // bookkeeping
-        $oPerson->setLinesRemovedCount($oPerson->linesRemovedCount() + $iLinesRemoved);
-        $oPerson->organisation()->setLinesRemovedCount($oPerson->organisation()->linesRemovedCount() + $iLinesRemoved);
-        $oPerson->setLinesAddedCount($oPerson->linesAddedCount() + $iLinesAdded);
-        $oPerson->organisation()->setLinesAddedCount($oPerson->organisation()->linesAddedCount() + $iLinesAdded);
-        echo "Parsed commit " . $sCommit . " for " . $oPerson->email() . "\n";
-
-        // update csvs
-        self::writeData();
+        $oPerson->appendToCommitQueue($sCommit);
     }
 
-    private static function writeData()
+    public static function writeData()
     {
         // write orgs
         $aOrgs = array();
@@ -350,4 +420,20 @@ abstract class ContributorRepo
     }
 }
 
+
+// write contributors
+$aDonePeople = array();
+foreach (ContributorRepo::$aPersons as $oPerson) {
+    if (isset($aDonePeople[$oPerson->name()]))
+        continue;
+
+    // this has duplicates. remember? :)
+    $aDonePeople[$oPerson->name()] = true;
+
+    $oPerson->processCommitQueue();
+    ContributorRepo::writeData();
+}
+
+
+ContributorRepo::writeData();
 
