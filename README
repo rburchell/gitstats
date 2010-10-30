@@ -1,0 +1,35 @@
+what is this?
+=============
+
+gitstats is a simple script to read 'git log', run diffs, and generate
+statistics on who is doing what over the life of a Git repository.
+
+The information gitstats generates is in two primary facets: which individuals
+are doing the work, and which organisations do those individuals come from.
+
+The raw output from gitstats isn't perfect (obviously) as some individuals
+change email addresses, etc, but gitstats does make some effort to try keep
+track of people.
+
+Usual disclaimer about raw data applies, you should have insight into the real
+situation behind the figures before trying to apply any sort of real
+interpretation to it.
+
+why php?
+========
+
+I'm sorry, I really am. But PHP is one of the scripting languages I'm most
+familiar with (having used it for many years in many settings), so it's usually
+the go-to language when I want to prototype something quickly. If my choice of
+languages offends you, feel free to use something else.
+
+contact
+=======
+
+patches, etc, are more than welcome. I wrote gitstats as a very quick hack to
+fulfil a particular need/desire I had, and as such, the quality of the code
+isn't great. I'll probably never fix that on my own, seeing as it *does* fulfil
+my needs.
+
+if you want to contact me, please mail:
+ robin.burchell@collabora.co.uk
